@@ -62,6 +62,7 @@ namespace wss
             connection(
                 boost::asio::ip::tcp::socket&& socket,
                 bool is_client,
+                std::string local_stream_id,
                 bool use_tcp_protocol = false);
 
             /**
