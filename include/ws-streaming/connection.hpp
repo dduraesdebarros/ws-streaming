@@ -7,6 +7,8 @@
 #include <string>
 
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/ssl/stream.hpp>
+#include <boost/beast/core/tcp_stream.hpp>
 #include <boost/signals2/connection.hpp>
 #include <boost/signals2/signal.hpp>
 #include <boost/system/error_code.hpp>
@@ -16,6 +18,7 @@
 #include <ws-streaming/local_signal.hpp>
 #include <ws-streaming/metadata.hpp>
 #include <ws-streaming/remote_signal.hpp>
+#include <ws-streaming/detail/base_peer.hpp>
 #include <ws-streaming/detail/command_interface_client.hpp>
 #include <ws-streaming/detail/local_signal_container.hpp>
 #include <ws-streaming/detail/peer.hpp>
@@ -61,6 +64,27 @@ namespace wss
              */
             connection(
                 boost::asio::ip::tcp::socket&& socket,
+                bool is_client,
+                std::string local_stream_id,
+                bool use_tcp_protocol = false);
+
+            /**
+             * Constructs a connection object from a TLS stream. Behaves identically to the TCP
+             * socket constructor, except that all subsequent I/O is performed over the TLS-
+             * encrypted stream. The stream must already be connected and its TLS handshake must
+             * already be complete (including the HTTP WebSocket upgrade request and response, if
+             * necessary).
+             *
+             * @param stream A connected, handshaken TLS stream. The constructed object takes
+             *     ownership of the stream. The stream's execution context is used for all
+             *     asynchronous I/O operations.
+             * @param is_client True if the connection should behave as a client.
+             * @param local_stream_id The local stream ID.
+             * @param use_tcp_protocol True to use the direct TCP protocol instead of a WebSocket
+             *     connection.
+             */
+            connection(
+                boost::asio::ssl::stream<boost::beast::tcp_stream>&& stream,
                 bool is_client,
                 std::string local_stream_id,
                 bool use_tcp_protocol = false);
@@ -279,7 +303,7 @@ namespace wss
         private:
 
             bool _is_client;
-            std::shared_ptr<detail::peer> _peer;
+            std::shared_ptr<detail::base_peer> _peer;
 
             detail::semver _api_version;
             std::string _remote_stream_id;

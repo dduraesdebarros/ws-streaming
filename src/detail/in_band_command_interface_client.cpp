@@ -8,10 +8,10 @@
 #include <nlohmann/json.hpp>
 
 #include <ws-streaming/detail/in_band_command_interface_client.hpp>
-#include <ws-streaming/detail/peer.hpp>
+#include <ws-streaming/detail/base_peer.hpp>
 
 wss::detail::in_band_command_interface_client::in_band_command_interface_client(
-        std::shared_ptr<peer> peer)
+        std::shared_ptr<base_peer> peer)
     : _peer(peer)
 {
 }

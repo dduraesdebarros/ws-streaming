@@ -18,6 +18,7 @@
 #include <ws-streaming/detail/in_band_command_interface_client.hpp>
 #include <ws-streaming/detail/linear_table.hpp>
 #include <ws-streaming/detail/peer.hpp>
+#include <ws-streaming/detail/peer_tls.hpp>
 #include <ws-streaming/detail/registered_local_signal.hpp>
 #include <ws-streaming/detail/remote_signal_impl.hpp>
 #include <ws-streaming/detail/semver.hpp>
@@ -32,6 +33,18 @@ wss::connection::connection(
         bool use_tcp_protocol)
     : _is_client{is_client}
     , _peer{std::make_shared<detail::peer>(std::move(socket), is_client, use_tcp_protocol)}
+    , _local_stream_id{local_stream_id}
+{
+    _command_interfaces["jsonrpc"] = { { "httpMethod", "" } };
+}
+
+wss::connection::connection(
+        boost::asio::ssl::stream<boost::beast::tcp_stream>&& stream,
+        bool is_client,
+        std::string local_stream_id,
+        bool use_tcp_protocol)
+    : _is_client{is_client}
+    , _peer{std::make_shared<detail::peer_tls>(std::move(stream), is_client, use_tcp_protocol)}
     , _local_stream_id{local_stream_id}
 {
     _command_interfaces["jsonrpc"] = { { "httpMethod", "" } };

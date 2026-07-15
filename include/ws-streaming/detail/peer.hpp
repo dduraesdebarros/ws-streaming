@@ -3,10 +3,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include <boost/asio/buffer.hpp>
@@ -18,6 +16,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <ws-streaming/detail/base_peer.hpp>
 #include <ws-streaming/detail/streaming_protocol.hpp>
 #include <ws-streaming/detail/websocket_protocol.hpp>
 
@@ -56,7 +55,7 @@ namespace wss::detail
      *     stream socket types such as UNIX domain sockets. It should either be templated or use a
      *     polymorphic socket adapter so it can work with any stream socket type.
      */
-    class peer : public std::enable_shared_from_this<peer>
+    class peer : public base_peer
     {
         public:
 
@@ -97,38 +96,6 @@ namespace wss::detail
                 std::size_t tx_buffer_size = 32 * 1024 * 1024);
 
             /**
-             * Activates the peer by starting asynchronous I/O operations using the socket's
-             * execution context. To stop the peer later, call stop(), which cancels all
-             * asynchronous I/O operations, allowing the object to be destroyed.
-             */
-            void run();
-
-            /**
-             * Activates the peer by starting asynchronous I/O operations using the socket's
-             * execution context. The specified data is processed as if it had been received from
-             * the socket. This is useful, for example, if an HTTP client has inadvertently read
-             * and buffered WebSocket data after the HTTP request response. To stop the peer
-             * later, call stop(), which cancels all asynchronous I/O operations, allowing the
-             * object to be destroyed.
-             *
-             * Even if this function is called from within the correct execution context, the
-             * processing of the specified data is deferred using boost::asio::post().
-             *
-             * @param data A pointer to the data to process.
-             * @param size The number of bytes pointed to by @p data.
-             */
-            void run(const void *data, std::size_t size);
-
-            /**
-             * Closes the connection. The socket is closed, and any pending asynchronous socket
-             * operations are canceled, but their completion handlers, which hold shared-pointer
-             * references to this object, will be posted to the execution context and execute
-             * later. The on_closed signal will be raised later from the execution context,
-             * unless it has already been raised due to an error or a previous call to stop().
-             */
-            void stop();
-
-            /**
              * Asynchronously sends signal data to the remote peer. This function directly
              * supports scatter-gather operations with no additional copy steps.
              *
@@ -138,10 +105,9 @@ namespace wss::detail
              * @param signo The signal number to which the data applies.
              * @param data A sequence of Boost.Asio buffer descriptors for the data to send.
              */
-            template <typename ConstBufferSequence>
             void send_data(
                 unsigned signo,
-                const ConstBufferSequence& data)
+                const boost::asio::const_buffer& data) override
             {
                 send_packet(
                     signo,
@@ -161,70 +127,14 @@ namespace wss::detail
             void send_metadata(
                 unsigned signo,
                 const std::string& method,
-                const nlohmann::json& params);
-
-            /**
-             * A signal raised when a WebSocket Streaming Protocol data packet is received. The
-             * signal is raised from the execution context of the socket.
-             *
-             * @param signo The signal number to which the data applies.
-             * @param data A pointer to the payload data.
-             * @param size The number of payload data bytes pointed to by @p data.
-             *
-             * @throws ... Connected slots should not throw exceptions. If they do, they will
-             *     propagate out to the execution context. This can result in an unhandled
-             *     exception on a thread and terminate the process.
-             */
-            boost::signals2::signal<
-                void(
-                    unsigned signo,
-                    const std::uint8_t *data,
-                    std::size_t size)
-            > on_data_received;
-
-            /**
-             * A signal raised when a WebSocket Streaming Protocol metadata packet is received.
-             * The signal is raised from the execution context of the socket.
-             *
-             * @param signo The signal number to which the metadata applies, or zero for global
-             *     metadata.
-             * @param method The metadata method name.
-             * @param params A JSON value containing the metadata parameters.
-             *
-             * @throws ... Connected slots should not throw exceptions. If they do, they will
-             *     propagate out to the execution context. This can result in an unhandled
-             *     exception on a thread and terminate the process.
-             */
-            boost::signals2::signal<
-                void(
-                    unsigned signo,
-                    const std::string& method,
-                    const nlohmann::json& params)
-            > on_metadata_received;
-
-            /**
-             * A signal raised when the connection is closed. This can occur due to an error, or
-             * when stop() is called. The signal is raised from the execution context of the
-             * socket. Note that this may occur even after a caller has released its
-             * std::shared_ptr reference to a peer object.
-             *
-             * @param ec The error code of the error, if any, that caused the connection to be
-             *     closed.
-             *
-             * @throws ... Connected slots should not throw exceptions. If they do, they will
-             *     propagate out to the execution context. This can result in an unhandled
-             *     exception on a thread and terminate the process.
-             */
-            boost::signals2::signal<
-                void(const boost::system::error_code& ec)
-            > on_closed;
+                const nlohmann::json& params) override;
 
             /**
              * Gets the underlying socket.
              *
              * @return The underlying socket.
              */
-            boost::asio::ip::tcp::socket& socket()
+            boost::asio::ip::tcp::socket& socket() override
             {
                 return _socket;
             }
@@ -233,25 +143,18 @@ namespace wss::detail
 
             void set_send_buffer_size(std::size_t size);
 
-            void do_wait_rx();
+            void do_read() override;
+            void shutdown_and_close() override;
+            void send_control_frame(
+                unsigned opcode,
+                const boost::asio::const_buffer& payload,
+                std::size_t size,
+                bool shutdown_after) override;
+
             void do_wait_tx();
 
             void finish_wait_rx(const boost::system::error_code& wait_ec);
             void finish_wait_tx(const boost::system::error_code& wait_ec);
-
-            void process_buffer();
-            void process_buffer_tcp();
-            void process_buffer_ws();
-
-            void process_websocket_frame(
-                const detail::websocket_protocol::decoded_header& header,
-                std::uint8_t *data,
-                std::size_t size,
-                boost::system::error_code& ec);
-
-            std::size_t process_packet(const std::uint8_t *data, std::size_t size);
-            void process_data_packet(unsigned signo, const std::uint8_t *data, std::size_t size);
-            void process_metadata_packet(unsigned signo, const std::uint8_t *data, std::size_t size);
 
             template <typename ConstBufferSequence>
             void send_packet(
@@ -389,18 +292,11 @@ namespace wss::detail
                     do_wait_tx();
             }
 
-            void close(const boost::system::error_code& ec = {});
-
         private:
 
             boost::asio::ip::tcp::socket _socket;
-            bool _use_tcp_protocol = false;
-            bool _is_closed = false;
 
-            std::vector<std::uint8_t> _rx_buffer;
             std::vector<std::uint8_t> _tx_buffer;
-
-            std::size_t _rx_buffer_bytes = 0;
             std::size_t _tx_buffer_bytes = 0;
 
             bool _waiting_tx = false;
