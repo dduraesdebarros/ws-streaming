@@ -16,6 +16,7 @@ namespace wss::detail
     {
         constexpr std::uint16_t DEFAULT_TCP_PORT = 7411;                    /**< The default TCP port for direct TCP protocol connections. */
         constexpr std::uint16_t DEFAULT_WEBSOCKET_PORT = 7414;              /**< The default TCP port for WebSocket connections. */
+        constexpr std::uint16_t DEFAULT_SECURE_WEBSOCKET_PORT = 7415;       /**< The default TCP port for TLS-encrypted WebSocket connections. */
         constexpr std::uint16_t DEFAULT_COMMAND_INTERFACE_PORT = 7438;      /**< The default TCP port for HTTP command interface channel connections. */
         constexpr std::size_t MAX_HEADER_SIZE = 2 * sizeof(std::uint32_t);  /**< The maximum possible packet header size, in bytes. */
 

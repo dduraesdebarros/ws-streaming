@@ -14,6 +14,7 @@
 #include <ws-streaming/server.hpp>
 #include <ws-streaming/detail/http_client_servicer.hpp>
 #include <ws-streaming/detail/streaming_protocol.hpp>
+#include <ws-streaming/detail/tls.hpp>
 
 using namespace std::placeholders;
 
@@ -43,6 +44,29 @@ void wss::server::add_listener(
                 &server::on_listener_accept,
                 this,
                 _1)));
+}
+
+void wss::server::add_tls_listener(
+    std::uint16_t port,
+    const std::string& cert_file,
+    const std::string& key_file,
+    const std::string& ca_file,
+    bool make_command_interface)
+{
+    _ssl_context = std::make_unique<boost::asio::ssl::context>(
+        detail::tls::make_server_tls_context(cert_file, key_file, ca_file));
+
+    auto listener = std::make_shared<wss::listener<>>(
+        _executor,
+        boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v6(), port));
+
+    _listeners.emplace_back(
+        listener,
+        listener->on_accept.connect(
+            std::bind(&server::on_tls_listener_accept, this, _1)));
+
+    if (make_command_interface)
+        _command_interface_port = port;
 }
 
 void wss::server::add_default_listeners()
@@ -105,18 +129,21 @@ void wss::server::on_listener_accept(
     if (!socket.is_open())
         return;
 
-    auto client = std::make_shared<detail::http_client_servicer>(std::move(socket));
-    _sessions.emplace_back(
-        client,
-        client->on_command_interface_request.connect(std::bind(&server::on_servicer_command_interface_request, this, client, _1, _2)),
-        client->on_websocket_upgrade.connect(std::bind(&server::on_servicer_websocket_upgrade, this, client, _1)),
-        client->on_closed.connect(std::bind(&server::on_servicer_closed, this, client, _1)));
+    start_session(
+        std::make_shared<detail::http_client_servicer>(std::move(socket)));
+}
 
-    client->run();
+void wss::server::on_tls_listener_accept(
+    boost::asio::ip::tcp::socket& socket)
+{
+    if (!socket.is_open())
+        return;
+
+    start_session(
+        std::make_shared<detail::https_client_servicer>(std::move(socket), *_ssl_context));
 }
 
 nlohmann::json wss::server::on_servicer_command_interface_request(
-    const std::shared_ptr<detail::http_client_servicer>& /*servicer*/,
     const std::string& method,
     const nlohmann::json& params)
 {
@@ -138,74 +165,17 @@ nlohmann::json wss::server::on_servicer_command_interface_request(
         "no client with stream id " + stream_id);
 }
 
-void wss::server::on_servicer_websocket_upgrade(
-    const std::shared_ptr<detail::http_client_servicer>& /*servicer*/,
-    boost::asio::ip::tcp::socket& socket)
-{
-    std::string connection_local_stream_id;
-    try
-    {
-        auto remote_endpoint = socket.remote_endpoint();
-        connection_local_stream_id = remote_endpoint.address().to_string()
-                                     + ":" + std::to_string(remote_endpoint.port());
-    }
-    catch (const std::exception& /*e*/)
-    {
-        return;
-    }
-    auto connection = std::make_shared<wss::connection>(
-        std::move(socket),
-        false,
-        connection_local_stream_id);
-
-    if (_command_interface_port)
-        connection->register_external_command_interface(
-            "jsonrpc-http",
-            {
-                { "httpMethod", "POST" },
-                { "httpPath", "/" },
-                { "httpVersion", "1.1" },
-                { "port", std::to_string(_command_interface_port) }
-            });
-
-    for (const auto& signal : _ordered_signals)
-        connection->add_local_signal(*signal);
-
-    auto& entry = _clients.emplace_back(connection);
-
-    entry.on_available = connection->on_available.connect(
-        std::bind(
-            &server::on_connection_available,
-            this,
-            connection,
-            _1));
-
-    entry.on_unavailable = connection->on_unavailable.connect(
-        std::bind(
-            &server::on_connection_unavailable,
-            this,
-            connection,
-            _1));
-
-    entry.on_disconnected = connection->on_disconnected.connect(
-        std::bind(
-            &server::on_connection_disconnected,
-            this,
-            connection,
-            _1));
-
-    connection->run();
-
-    on_client_connected(connection);
-}
-
 void wss::server::on_servicer_closed(
-    const std::shared_ptr<detail::http_client_servicer>& servicer,
+    std::weak_ptr<detail::http_servicer_base> servicer,
     const boost::system::error_code& /*ec*/)
 {
+    auto servicer_base_prt = servicer.lock();
+    if (!servicer_base_prt)
+        return;
+
     _sessions.remove_if([&](const client_entry& entry)
     {
-        return entry.client == servicer;
+        return entry.client == servicer_base_prt;
     });
 }
 

@@ -2,8 +2,7 @@ set(sources
     ./client.cpp
     ./connection.cpp
     ./detail/command_interface_client_factory.cpp
-    ./detail/http_client.cpp
-    ./detail/http_client_servicer.cpp
+    ./detail/http_version.cpp
     ./detail/http_command_interface_client.cpp
     ./detail/in_band_command_interface_client.cpp
     ./detail/linear_table.cpp
@@ -41,6 +40,7 @@ set(headers
     ../include/ws-streaming/detail/connected_client_iterator.hpp
     ../include/ws-streaming/detail/http_client.hpp
     ../include/ws-streaming/detail/http_client_servicer.hpp
+    ../include/ws-streaming/detail/http_version.hpp
     ../include/ws-streaming/detail/http_command_interface_client.hpp
     ../include/ws-streaming/detail/in_band_command_interface_client.hpp
     ../include/ws-streaming/detail/json.hpp
@@ -52,7 +52,9 @@ set(headers
     ../include/ws-streaming/detail/remote_signal_container.hpp
     ../include/ws-streaming/detail/remote_signal_impl.hpp
     ../include/ws-streaming/detail/semver.hpp
+    ../include/ws-streaming/detail/ssl_stream_traits.hpp
     ../include/ws-streaming/detail/streaming_protocol.hpp
+    ../include/ws-streaming/detail/tls.hpp
     ../include/ws-streaming/detail/url.hpp
     ../include/ws-streaming/detail/websocket_protocol.hpp
     ../include/ws-streaming/dimension_builder.hpp

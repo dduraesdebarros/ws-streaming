@@ -8,6 +8,7 @@
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/ssl/stream.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
 #include <boost/beast/http/error.hpp>
@@ -19,12 +20,39 @@
 #include <ws-streaming/client.hpp>
 #include <ws-streaming/connection.hpp>
 #include <ws-streaming/detail/base64.hpp>
+#include <ws-streaming/detail/tls.hpp>
 #include <ws-streaming/detail/url.hpp>
 
 wss::client::client(boost::asio::any_io_executor executor)
     : _http_client{std::make_shared<detail::http_client>(executor)}
     , _executor(executor)
 {
+}
+
+void wss::client::enable_tls(
+    const std::string& ca_file,
+    const std::string& client_cert_file,
+    const std::string& client_key_file)
+{
+    _ca_file = ca_file;
+    _cert_file = client_cert_file;
+    _key_file = client_key_file;
+
+    _ssl_context = std::make_unique<boost::asio::ssl::context>(
+        detail::tls::make_client_tls_context(_ca_file, _cert_file, _key_file));
+    _https_client = std::make_shared<detail::https_client>(_executor, *_ssl_context);
+}
+
+const std::shared_ptr<wss::detail::https_client>& wss::client::ensure_https_client()
+{
+    if (!_https_client)
+    {
+        _ssl_context = std::make_unique<boost::asio::ssl::context>(
+            detail::tls::make_client_tls_context(_ca_file, _cert_file, _key_file));
+        _https_client = std::make_shared<detail::https_client>(_executor, *_ssl_context);
+    }
+
+    return _https_client;
 }
 
 void wss::client::async_connect(
@@ -72,6 +100,51 @@ void wss::client::async_connect(
 
                 auto connection = std::make_shared<wss::connection>(
                     stream.release_socket(),
+                    true,
+                    connection_local_stream_id);
+
+                auto data = buffer.data();
+                connection->run(data.data(), data.size());
+
+                handler({}, connection);
+            });
+    }
+
+    else if (url_obj.scheme() == "wss")
+    {
+        std::uint16_t port = url_obj.port_number()
+            .value_or(detail::streaming_protocol::DEFAULT_SECURE_WEBSOCKET_PORT);
+
+        ensure_https_client()->async_request(
+            url_obj.host_address(),
+            std::to_string(port),
+            create_request(url),
+            [handler = std::move(handler)](
+                const boost::system::error_code& ec,
+                const boost::beast::http::response<boost::beast::http::string_body>& response,
+                boost::asio::ssl::stream<boost::beast::tcp_stream>& stream,
+                const boost::beast::flat_buffer& buffer)
+            {
+                if (ec)
+                    return handler(ec, {});
+
+                if (response.result() != boost::beast::http::status::switching_protocols)
+                    return handler(boost::beast::http::error::bad_status, {});
+
+                std::string connection_local_stream_id;
+                try
+                {
+                    auto remote_endpoint = stream.next_layer().socket().remote_endpoint();
+                    connection_local_stream_id = remote_endpoint.address().to_string()
+                                                 + ":" + std::to_string(remote_endpoint.port());
+                }
+                catch (const std::exception& /*e*/)
+                {
+                    return;
+                }
+
+                auto connection = std::make_shared<wss::connection>(
+                    std::move(stream),
                     true,
                     connection_local_stream_id);
 
@@ -140,6 +213,9 @@ void wss::client::async_connect(
 void wss::client::cancel()
 {
     _http_client->cancel();
+
+    if (_https_client)
+        _https_client->cancel();
 }
 
 boost::beast::http::request<boost::beast::http::string_body>

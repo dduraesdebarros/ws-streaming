@@ -4,8 +4,12 @@
 #include <list>
 #include <memory>
 #include <set>
+#include <string>
 
 #include <boost/asio.hpp>
+#include <boost/asio/ssl/context.hpp>
+#include <boost/asio/ssl/stream.hpp>
+#include <boost/beast/core/tcp_stream.hpp>
 #include <boost/signals2/signal.hpp>
 
 #include <nlohmann/json.hpp>
@@ -73,6 +77,32 @@ namespace wss
              * @param listener The listener object to use.
              */
             void add_listener(std::shared_ptr<listener<>> listener);
+
+            /**
+             * Adds a TLS listener so that the server accepts TLS-encrypted WebSocket connections
+             * on the specified TCP port number. The library builds and owns the SSL context
+             * from the supplied certificate files.
+             *
+             * This function must be called before calling run().
+             *
+             * @param port The port number to listen on.
+             * @param cert_file Path to the server certificate chain (PEM). Required.
+             * @param key_file Path to the server private key (PEM). Required.
+             * @param ca_file Path to a PEM file of trusted CA certificates used to verify client
+             *     certificates. If non-empty, mutual TLS is enabled: clients must present a
+             *     certificate signed by one of these CAs. If empty, client certificates are not
+             *     requested.
+             * @param make_command_interface True to set this port as the HTTP JSON-RPC command
+             *     interface port.
+             *
+             * @throws boost::system::system_error A certificate or key file could not be loaded.
+             */
+            void add_tls_listener(
+                std::uint16_t port,
+                const std::string& cert_file,
+                const std::string& key_file,
+                const std::string& ca_file = {},
+                bool make_command_interface = false);
 
             /**
              * Adds listeners for the standard port numbers specified by the WebSocket Streaming
@@ -226,16 +256,103 @@ namespace wss
 
         private:
 
+            // Accepts a plaintext connection and starts a plaintext servicer session
             void on_listener_accept(
                 boost::asio::ip::tcp::socket& socket);
 
+            // Accepts a connection on a TLS listener and starts a TLS servicer session
+            // The TLS handshake is performed by the servicer
+            void on_tls_listener_accept(
+                boost::asio::ip::tcp::socket& socket);
+
+            // Wires up a newly constructed servicer (plaintext or TLS) into a session.
+            // Templated on the servicer type so that the correct WebSocket-upgrade
+            // slot (bare socket vs ssl::stream) is connected.
+            template <typename Servicer>
+            void start_session(std::shared_ptr<Servicer> client)
+            {
+                _sessions.emplace_back(
+                    client,
+                    client->on_command_interface_request.connect(
+                        std::bind(&server::on_servicer_command_interface_request, this, std::placeholders::_1, std::placeholders::_2)),
+                    client->on_websocket_upgrade.connect(
+                        std::bind(&server::on_servicer_websocket_upgrade<typename Servicer::upgrade_socket_type>, this, std::placeholders::_1)),
+                    client->on_closed.connect(
+                        std::bind(&server::on_servicer_closed, this,
+                            std::weak_ptr<detail::http_servicer_base>(client), std::placeholders::_1)));
+
+                client->run();
+            }
+
             nlohmann::json on_servicer_command_interface_request(
-                const std::shared_ptr<detail::http_client_servicer>& servicer,
                 const std::string& method,
                 const nlohmann::json& params);
 
-            void on_servicer_websocket_upgrade(const std::shared_ptr<detail::http_client_servicer>& servicer, boost::asio::ip::tcp::socket& socket);
-            void on_servicer_closed(const std::shared_ptr<detail::http_client_servicer>& servicer, const boost::system::error_code& ec);
+            // Returns the underlying tcp::socket for either a bare socket or a TLS stream
+            static boost::asio::ip::tcp::socket& tcp_socket_of(boost::asio::ip::tcp::socket& socket)
+            {
+                return socket;
+            }
+
+            static boost::asio::ip::tcp::socket& tcp_socket_of(boost::asio::ssl::stream<boost::beast::tcp_stream>& stream)
+            {
+                return stream.next_layer().socket();
+            }
+
+            // Handles a completed WebSocket upgrade by taking ownership
+            // of the transport (bare socket or ssl::stream) and building a connection from it
+            template <typename UpgradeSocket>
+            void on_servicer_websocket_upgrade(UpgradeSocket& upgrade_socket)
+            {
+                std::string connection_local_stream_id;
+                try
+                {
+                    auto remote_endpoint = tcp_socket_of(upgrade_socket).remote_endpoint();
+                    connection_local_stream_id = remote_endpoint.address().to_string()
+                                                 + ":" + std::to_string(remote_endpoint.port());
+                }
+                catch (const std::exception& /*e*/)
+                {
+                    return;
+                }
+
+                auto connection = std::make_shared<wss::connection>(
+                    std::move(upgrade_socket),
+                    false,
+                    connection_local_stream_id);
+
+                if (_command_interface_port)
+                    connection->register_external_command_interface(
+                        "jsonrpc-http",
+                        {
+                            { "httpMethod", "POST" },
+                            { "httpPath", "/" },
+                            { "httpVersion", "1.1" },
+                            { "port", std::to_string(_command_interface_port) }
+                        });
+
+                for (const auto& signal : _ordered_signals)
+                    connection->add_local_signal(*signal);
+
+                auto& entry = _clients.emplace_back(connection);
+
+                entry.on_available = connection->on_available.connect(
+                    std::bind(&server::on_connection_available, this, connection, std::placeholders::_1));
+
+                entry.on_unavailable = connection->on_unavailable.connect(
+                    std::bind(&server::on_connection_unavailable, this, connection, std::placeholders::_1));
+
+                entry.on_disconnected = connection->on_disconnected.connect(
+                    std::bind(&server::on_connection_disconnected, this, connection, std::placeholders::_1));
+
+                connection->run();
+
+                on_client_connected(connection);
+            }
+
+            void on_servicer_closed(
+                std::weak_ptr<detail::http_servicer_base> servicer,
+                const boost::system::error_code& ec);
 
             void on_connection_available(
                 connection_ptr connection,
@@ -266,20 +383,20 @@ namespace wss
             struct client_entry
             {
                 client_entry(
-                        std::shared_ptr<detail::http_client_servicer> client,
-                        boost::signals2::scoped_connection on_websocket_upgrade,
+                        std::shared_ptr<detail::http_servicer_base> client,
                         boost::signals2::scoped_connection on_command_interface_request,
+                        boost::signals2::scoped_connection on_websocket_upgrade,
                         boost::signals2::scoped_connection on_closed)
-                    : client(client)
-                    , on_websocket_upgrade(std::move(on_websocket_upgrade))
+                    : client(std::move(client))
                     , on_command_interface_request(std::move(on_command_interface_request))
+                    , on_websocket_upgrade(std::move(on_websocket_upgrade))
                     , on_closed(std::move(on_closed))
                 {
                 }
 
-                std::shared_ptr<detail::http_client_servicer> client;
-                boost::signals2::scoped_connection on_websocket_upgrade;
+                std::shared_ptr<detail::http_servicer_base> client;
                 boost::signals2::scoped_connection on_command_interface_request;
+                boost::signals2::scoped_connection on_websocket_upgrade;
                 boost::signals2::scoped_connection on_closed;
             };
 
@@ -291,5 +408,6 @@ namespace wss
             std::set<local_signal *> _signals;
             std::list<local_signal *> _ordered_signals;
             std::uint16_t _command_interface_port = 0;
+            std::unique_ptr<boost::asio::ssl::context> _ssl_context;    // null if no TLS listener has been added
     };
 }
