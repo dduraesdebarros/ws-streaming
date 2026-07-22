@@ -28,7 +28,9 @@ namespace wss
      * Asynchronously accepts and manages WebSocket Streaming connections from clients. The
      * application configures the server with one or more TCP listeners by calling add_listener(),
      * or by calling add_default_listeners() to use the default port numbers specified by the
-     * WebSocket Streaming specification. It then calls run() to begin listening for connections.
+     * WebSocket Streaming specification. Listeners accepting TLS-encrypted connections are added
+     * with add_tls_listener(), and can be used alongside unencrypted ones. The application then
+     * calls run() to begin listening for connections.
      *
      * A server can publish signal data to connected clients. The application should call
      * add_local_signal() for each signal to be published. Signals are advertised as available to
@@ -83,6 +85,13 @@ namespace wss
              * on the specified TCP port number. The library builds and owns the SSL context
              * from the supplied certificate files.
              *
+             * A server object holds a single SSL context, which is shared by all of its TLS
+             * listeners. Calling this function more than once therefore replaces the certificate
+             * files used by any TLS listener already added.
+             *
+             * Clients connecting with a `wss://` URL that does not specify a port number use port
+             * 7415.
+             *
              * This function must be called before calling run().
              *
              * @param port The port number to listen on.
@@ -93,7 +102,12 @@ namespace wss
              *     certificate signed by one of these CAs. If empty, client certificates are not
              *     requested.
              * @param make_command_interface True to set this port as the HTTP JSON-RPC command
-             *     interface port.
+             *     interface port. A server advertises a single command interface port to every
+             *     peer, whatever transport that peer is using, and the advertisement does not
+             *     indicate whether TLS is required. The library's own out-of-band command
+             *     interface client always connects in plaintext, and so cannot use a command
+             *     interface hosted on a TLS port; peers implementing version 3.0 or later of the
+             *     protocol use the in-band command interface instead.
              *
              * @throws boost::system::system_error A certificate or key file could not be loaded.
              */

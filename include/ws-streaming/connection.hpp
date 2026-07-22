@@ -30,7 +30,9 @@
 namespace wss
 {
     /**
-     * Implements a WebSocket Streaming connection to a remote peer.
+     * Implements a WebSocket Streaming connection to a remote peer. Depending on the constructor
+     * used, the connection runs either over a plaintext TCP socket or over a TLS-encrypted
+     * stream. The two behave identically in every other respect.
      */
     class connection
         : public std::enable_shared_from_this<connection>
@@ -181,7 +183,8 @@ namespace wss
             const boost::asio::any_io_executor& executor() const noexcept;
 
             /**
-             * Gets the Boost.Asio socket underlying the connection.
+             * Gets the Boost.Asio socket underlying the connection. For a TLS-encrypted
+             * connection, this is the TCP socket underlying the TLS stream.
              *
              * @return The Boost.Asio socket underlying the connection.
              */

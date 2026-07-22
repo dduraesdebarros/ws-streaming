@@ -24,6 +24,10 @@ namespace wss
      * completion function passed to async_connect() is called with the corresponding error code
      * and, if successful, a constructed @ref connection object.
      *
+     * Connections can be unencrypted (`ws://` URLs) or encrypted with TLS (`wss://` URLs). To use
+     * TLS, call enable_tls() to configure the certificate files to use before calling
+     * async_connect().
+     *
      * A client object can handle multiple async_connect() calls, but only one connection attempt
      * at a time may be in progress. Connection attempts can be canceled by calling cancel(); the
      * completion handler will then be called with the error code
@@ -51,6 +55,8 @@ namespace wss
              * empty by default), which likewise requires a CA file: connecting over `wss://`
              * without a CA file configured raises std::invalid_argument.
              *
+             * @include tls-usage.cpp
+             *
              * @param ca_file Path to a PEM file of trusted CA certificates used to verify the
              *     server. Required: if empty, std::invalid_argument is thrown.
              * @param client_cert_file Path to the client certificate chain (PEM), for mutual TLS.
@@ -71,12 +77,22 @@ namespace wss
              * Asynchronously connects to a remote server. An HTTP GET request is made to
              * establish the WebSocket connection.
              *
+             * The scheme of the URL selects the transport: `ws://` for an unencrypted WebSocket
+             * connection, `wss://` for a TLS-encrypted one, and any other scheme for a direct TCP
+             * protocol connection. If the URL does not specify a port number, the default port
+             * for the scheme is used: 7414 for `ws://`, 7415 for `wss://`, and 7411 for direct
+             * TCP.
+             *
              * @param url The WebSocket URL of the remote server.
              * @param handler A completion handler to call when the operation is complete. This
              *     handler receives either a nonzero error code, or a std::shared_ptr holding a
              *     constructed @ref connection object on which connection::run() has been called.
              *     The handler is guaranteed to be called exactly once, and to be dispatched using
              *     the execution context passed to the constructor.
+             *
+             * @throws std::invalid_argument A `wss://` URL was given, but TLS has not been
+             *     configured by a successful call to enable_tls(). The completion handler is not
+             *     called in this case.
              */
             void async_connect(
                 std::string_view url,

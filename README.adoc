@@ -16,7 +16,9 @@
 :io_context: https://www.boost.org/doc/libs/1_83_0/doc/html/boost_asio/reference/io_context.html
 :msvc: https://visualstudio.microsoft.com/vs/features/cplusplus/
 :nlohmann-json: https://github.com/nlohmann/json
+:openssl: https://www.openssl.org/
 :signals2: https://www.boost.org/doc/libs/1_83_0/doc/html/signals2.html
+:ssl-context: https://www.boost.org/doc/libs/1_83_0/doc/html/boost_asio/reference/ssl__context.html
 
 == Introduction
 
@@ -29,10 +31,11 @@ toc::[]
 
 === Dependencies
 
-The library uses a minimal set of dependencies, and will automatically fetch them if they are not
-already installed on the host system. As long as CMake and a suitable C++ compiler are installed,
-it is usually sufficient to simply clone and build the library without first installing any
-additional dependencies.
+The library uses a minimal set of dependencies, and will automatically fetch most of them if they
+are not already installed on the host system. The exception is OpenSSL, which is needed for TLS
+support and must be installed beforehand. Once it is, and as long as CMake and a suitable C++
+compiler are installed, it is usually sufficient to simply clone and build the library without
+first installing any additional dependencies.
 
 * Build dependencies:
 ** Tools:
@@ -42,8 +45,11 @@ additional dependencies.
 *** link:{googletest}[GoogleTest] if building unit tests &ge; v1.17.0
 *** link:{boost}[Boost] header-only libraries (asio, beast, serialization, signals2) &ge; 1.84
 *** link:{nlohmann-json}[nlohmann-json] &ge; v3.12.0
+** Libraries (must already be installed):
+*** link:{openssl}[OpenSSL] &ge; 1.1.1, used by Boost.Asio to implement TLS
 * Runtime dependencies:
 ** link:{boost}[Boost] compiled libraries (system, url) &ge; 1.84
+** link:{openssl}[OpenSSL] &ge; 1.1.1
 
 == Building & Installing the Library
 
@@ -85,7 +91,7 @@ link:{cmake-add-subdirectory}[add_subdirectory()].
 === Using an Installed Version of the Library
 
 [source,cmake]
-find_package(ws-streaming 3.0.0 REQUIRED)
+find_package(ws-streaming 3.0.2 REQUIRED)
 
 === Fetching the Library and Building In-Project
 
@@ -93,7 +99,7 @@ find_package(ws-streaming 3.0.0 REQUIRED)
 ----
 FetchContent_Declare(ws-streaming
     GIT_REPOSITORY  https://github.com/openDAQ/ws-streaming
-    GIT_TAG         v3.0.0
+    GIT_TAG         v3.0.2
     OVERRIDE_FIND_PACKAGE)
 
 FetchContent_MakeAvailable(ws-streaming)
@@ -187,14 +193,20 @@ explicit-rule domain signal) and structure-valued signals.
   creates a `local_signal` object and registers it with a `connection`, or with a `server` (which
   then registers the object with all the connections it manages).
 
+* *TLS* - Transport Layer Security, used to encrypt the connection between two *peers*. A *client*
+  requests an encrypted connection by connecting to a `wss://` URL, and a *server* accepts such
+  connections on ports added with the `server::add_tls_listener()` member function. The library
+  builds and owns the link:{ssl-context}[SSL context], using certificate, private key and CA file
+  paths supplied by the application.
+
 image::docs/images/object-model.drawio.png[]
 
 === Setup: Boost.Asio Integration
 
-The streaming library is based on link:{url}[Boost.Asio] and requires an link:{executor}[executor]
-to perform asynchronous I/O operations. The application must supply and manage the executor.
-In most cases, this is as simple as instantiating an link:{io_context}[io_context] and calling its
-`run()` function in a thread:
+The streaming library is based on link:{boost-asio}[Boost.Asio] and requires an
+link:{executor}[executor] to perform asynchronous I/O operations. The application must supply and
+manage the executor. In most cases, this is as simple as instantiating an
+link:{io_context}[io_context] and calling its `run()` function in a thread:
 
 [source,cpp]
 ----
@@ -263,6 +275,69 @@ server.on_client_connected.connect(
         // connection_ptr, so the connection stays open until the server is closed
     });
 ----
+
+=== Securing Connections with TLS
+
+Connections can be encrypted with TLS in both roles. The library owns the TLS configuration: the
+application supplies the paths of PEM-encoded certificate, private key and CA files, and the
+library builds and manages the underlying link:{ssl-context}[SSL context].
+
+A client enables TLS by calling `enable_tls()` before connecting, and then connects to a `wss://`
+URL instead of a `ws://` one. A CA file is always required, because the client always verifies the
+certificate presented by the server. If the URL does not specify a port number, port 7415 is used.
+
+[source,cpp]
+----
+wss::client client{ioc.get_executor()};
+
+client.enable_tls("ca.pem");
+
+client.async_connect(
+    "wss://localhost:7415",
+    [](const boost::system::error_code& ec, wss::connection_ptr connection)
+    {
+        // the connection is used exactly as an unencrypted one
+    });
+----
+
+A server accepts encrypted connections on ports added with `add_tls_listener()`, which requires a
+certificate chain and a private key. Encrypted and unencrypted listeners can be used at the same
+time, and each connection is serviced according to the listener that accepted it. Note that
+`add_default_listeners()` adds unencrypted listeners only.
+
+[source,cpp]
+----
+wss::server server{ioc.get_executor()};
+server.add_tls_listener(7415, "server.pem", "server-key.pem");
+server.run();
+----
+
+To authenticate clients as well as the server (mutual TLS), the server additionally passes a CA
+file to `add_tls_listener()`, and each client passes its own certificate and private key to
+`enable_tls()`. The server then requires every client to present a certificate signed by one of
+the CAs in that file, and rejects those that do not.
+
+[source,cpp]
+----
+server.add_tls_listener(7415, "server.pem", "server-key.pem", "ca.pem");
+
+client.enable_tls("ca.pem", "client.pem", "client-key.pem");
+----
+
+Only the streaming channel has an encrypted counterpart: port 7415 pairs with port 7414, but no
+secure port is defined alongside the HTTP command interface port 7438. This matters only for the
+out-of-band command interface, which older clients use for stream management. Peers implementing
+version 3.0 or later of the protocol exchange command interface requests in-band, over the
+streaming connection, so those requests are encrypted whenever the connection is. Requests sent to
+an out-of-band command interface are not: the library always connects to one in plaintext, even
+from a `wss://` connection.
+
+NOTE: TLS 1.2 is the oldest accepted protocol version; SSL 2.0, SSL 3.0, TLS 1.0 and TLS 1.1 are
+disabled. Certificates are verified against the configured CA file, but the peer's hostname is
+_not_ checked against the certificate it presents: any certificate issued by a trusted CA is
+accepted, whichever host it was issued for. Finally, a `server` object holds a single TLS
+configuration, so calling `add_tls_listener()` more than once replaces the certificate files used
+by all of its TLS listeners.
 
 === Source Role: Sending Data to Remote Peers
 
