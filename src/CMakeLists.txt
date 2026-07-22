@@ -103,8 +103,6 @@ target_include_directories(
             .
 )
 
-find_package(OpenSSL REQUIRED)
-
 target_link_libraries(${PROJECT_NAME}
     PUBLIC
         Boost::archive

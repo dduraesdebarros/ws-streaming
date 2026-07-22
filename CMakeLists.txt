@@ -12,6 +12,7 @@ include(GNUInstallDirs)
 
 include(dependencies/Boost.cmake)
 include(dependencies/nlohmann_json.cmake)
+include(dependencies/OpenSSL.cmake)
 include(dependencies/Threads.cmake)
 
 add_subdirectory(src)

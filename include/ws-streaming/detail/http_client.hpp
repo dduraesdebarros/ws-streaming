@@ -20,8 +20,6 @@
 #include <boost/beast/http/write.hpp>
 #include <boost/system/error_code.hpp>
 
-#include <openssl/ssl.h>
-
 #include <ws-streaming/detail/http_version.hpp>
 #include <ws-streaming/detail/ssl_stream_traits.hpp>
 
