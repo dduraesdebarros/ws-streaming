@@ -242,6 +242,9 @@ namespace wss
             void on_peer_closed(
                 const boost::system::error_code& ec);
 
+            void refresh_local_signal_bindings(
+                detail::registered_local_signal& signal);
+
             void on_local_signal_metadata_changed(
                 detail::registered_local_signal& signal);
 

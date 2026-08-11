@@ -272,10 +272,14 @@ void wss::connection::on_peer_closed(
     on_disconnected(ec);
 }
 
-void wss::connection::on_local_signal_metadata_changed(
+void wss::connection::refresh_local_signal_bindings(
     detail::registered_local_signal& entry)
 {
-    if (entry.signal.metadata().rule() == rule_types::linear_rule)
+    auto rule = entry.signal.metadata().rule();
+
+    entry.is_explicit = rule == rule_types::explicit_rule;
+
+    if (rule == rule_types::linear_rule)
     {
         if (entry.table)
             entry.table->update(entry.signal.metadata());
@@ -300,6 +304,12 @@ void wss::connection::on_local_signal_metadata_changed(
             entry.domain_table = domain_entry->table;
         }
     }
+}
+
+void wss::connection::on_local_signal_metadata_changed(
+    detail::registered_local_signal& entry)
+{
+    refresh_local_signal_bindings(entry);
 
     entry.value_index = 0;
     _peer->send_metadata(entry.signo, "signal", entry.signal.metadata().json());
@@ -642,6 +652,10 @@ bool wss::connection::subscribe(
         {
             { "signalId", signal->signal.id() }
         });
+
+    // The signal's metadata can have changed while nobody was subscribed, in which
+    // case no metadata-changed notification arrived to update the derived state.
+    refresh_local_signal_bindings(*signal);
 
     nlohmann::json metadata = signal->signal.metadata().json();
     metadata["valueIndex"] = signal->value_index;
